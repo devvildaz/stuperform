@@ -1,0 +1,325 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+Importacion de librerias
+
+```{r}
+library(readr)
+library(keras)
+library(DT)
+library(fastDummies)
+library(caret)
+```
+
+Lectura del dataset de registros sobre estudiantes
+
+```{r}
+FILE_PATH <- "/home/devvildaz/Code/R/datasets/student_performance"
+data.frame <- read.table(file.path(FILE_PATH, "student-mat.csv"), sep=";",header=TRUE)
+
+sprintf("Rows (mat): %s", nrow(data.frame))
+```
+
+Nombres de las columnas del dataset
+
+```{r}
+colnames(data.frame)[1:32]
+```
+
+Vista del dataset utilizando DataTables
+
+```{r}
+datatable(data.frame)
+```
+
+Verificando si existe algun "missing value"
+
+```{r}
+sum(is.na(data.frame))
+```
+Extracion de los features que son de tipo categorico
+
+```{r}
+factors_name <- c()
+labels_cols <- c("G3")
+features_cols <- c()
+
+for(key in colnames(data.frame)){
+  if (class(data.frame[[key]]) == "factor"){
+    factors_name <- append(factors_name, key)
+  } 
+  if (!key %in%  labels_cols) {
+    features_cols <- append(features_cols, key)
+  }
+}
+remove(key)
+```
+
+Separacion de la data en datos de testing y training
+
+```{r}
+train_size <- floor(0.90 * nrow(data.frame))
+test_size <- nrow(data.frame) - train_size
+
+x_ind <- sample(seq_len(nrow(data.frame)), size=train_size)
+
+train <- data.frame[x_ind,]
+test <- data.frame[-x_ind,]
+summary(train)
+
+remove(x_ind)
+remove(train_size)
+remove(test_size)
+```
+
+Creacion de una dataframe numerico con el fin de hacer el test de chi-cuadrado, junto a la obtencion de la metrica de correlacion
+
+```{r}
+temp_data <- data.frame(train)
+for(key in factors_name){
+  temp_data[[key]] <- as.numeric(as.factor(temp_data[[key]]))
+}
+```
+
+Tabla de correlacion en DataTable
+
+```{r}
+cor_table <- round(cor(temp_data),2)
+datatable(cor_table)
+remove(temp_data)
+```
+
+Features extraidos a partir de la tabla de correlacion
+
+```{r}
+features_cols <- c("Medu","sex", "address", "famsize", "Medu", "Fedu", "Mjob", "reason", "traveltime", "studytime", "failures", "paid", "higher", "romantic" , "goout", "G1", "G2")
+```
+
+Aplicacion de Chi-Cuadrado
+
+```{r}
+g3 <- train["G3"]
+
+array <- c()
+cols <- c()
+for(key in colnames(train)){
+  x <- chisq.test(train[[key]], as.matrix(g3))
+  temp <- as.numeric(x["p.value"])
+  array <- append(array, temp)
+  cols <- append(cols, key)
+  print("")
+}
+names(array) <- cols
+round(array, digits=2)
+remove(g3)
+#data.frame <- subset(data.frame,select=append(features_cols,"G3"))
+```
+
+Features extraidos luego de la obtencion del Chi-Cuadrado
+```{r}
+features_cols <- c("address","Mjob","schoolsup","absences","failures", "paid", "romantic", "G1", "G2")
+```
+
+Separacion de los features y los labels
+
+```{r}
+train_x <- train[features_cols]
+train_y <- train["G3"]
+
+test_x <- test[features_cols]
+test_y <- test["G3"]
+```
+
+Dummizacion de los features de tipo categorico
+
+```{r}
+train_x <- dummy_cols(train_x, select_columns=factors_name, remove_selected_columns = TRUE, remove_first_dummy=TRUE)
+test_x <- dummy_cols(test_x, select_columns=factors_name, remove_selected_columns = TRUE, remove_first_dummy=TRUE)
+```
+
+Funcion para convertir la nota final en un numero categorico (binario)
+
+```{r}
+to_cat_grade <- function(grade) {
+  if(grade < 11){
+    return(0)
+  } else {
+    return(1)
+  }
+}
+```
+
+Categorizacion del Label establecido
+
+```{r}
+train_y$G3 <- lapply(train_y$G3, to_cat_grade)
+test_y$G3 <- lapply(test_y$G3, to_cat_grade)
+
+train_y <- to_categorical(train_y)
+test_y <- to_categorical(test_y)
+
+```
+
+Normalizacion de la data
+
+```{r}
+train_x <- as.matrix(train_x)
+params <- preProcess(train_x, method=c("center", "scale"))
+train_x <-predict(params, train_x)
+test_x <- as.matrix(predict(params, test_x))
+```
+
+Creacion y parametrizacion del modelo utilizando la funcion de coste MAE
+
+```{r}
+model <- keras_model_sequential()
+model %>%
+  layer_dense(name="DeepLayer1",
+              units= ncol(train_x),
+              activation="relu",
+              input_shape=ncol(train_x) ) %>%
+  layer_dense(name="DeepLayer2",
+              units= 16,
+              activation="relu") %>%
+  layer_dense(name="DeepLayer2.5",
+              units= 16,
+              activation="relu") %>%
+  layer_dense(name="DeepLayer3",
+              units= 16,
+              activation="sigmoid") %>%
+  layer_dense(name="OutputLayer",
+              units= 2,
+              activation="sigmoid")
+
+model %>% compile(loss="mae", optimizer="adamax", metrics=c("accuracy"))
+
+summary(model)
+```
+
+Ejecucion del modelo con MAE
+
+```{r}
+history <- model %>% fit(
+  train_x,
+  train_y,
+  epochs= 75,
+  batch_size= 32,
+  validation_split=0.111111,
+  verbose=1
+)
+```
+
+Evaluacion del modelo
+
+```{r}
+model %>% evaluate (as.matrix(test_x), test_y)
+pred <- model %>% predict(test_x)
+```
+
+```{r}
+confusionMatrix(as.factor(round(pred[,1])), as.factor(test_y[,1]))
+```
+
+
+Creacion y parametrizacion del modelo utilizando la funcion de coste MSLE
+
+```{r}
+msle <- keras_model_sequential()
+msle %>%
+  layer_dense(name="DeepLayer1",
+              units= ncol(train_x),
+              activation="relu",
+              input_shape=ncol(train_x) ) %>%
+  layer_dense(name="DeepLayer2",
+              units= 16,
+              activation="relu") %>%
+  layer_dense(name="DeepLayer2.5",
+              units= 16,
+              activation="relu") %>%
+  layer_dense(name="DeepLayer3",
+              units= 16,
+              activation="sigmoid") %>%
+  layer_dense(name="OutputLayer",
+              units= 2,
+              activation="sigmoid")
+
+msle %>% compile(loss="msle", optimizer="adamax", metrics=c("accuracy"))
+
+summary(msle)
+```
+
+Ejecucion del modelo con MSLE
+
+```{r}
+history <- msle %>% fit(
+  train_x,
+  train_y,
+  epochs= 75,
+  batch_size= 32,
+  validation_split=0.111111 
+)
+```
+
+Evaluacion del modelo
+
+```{r}
+msle %>% evaluate (as.matrix(test_x), test_y)
+```
+
+```{r}
+pred <- msle %>% predict(test_x)
+confusionMatrix(as.factor(round(pred[,1])), as.factor(test_y[,1]))
+```
+
+
+Creacion y parametrizacion del modelo utilizando la funcion de coste BCE
+
+```{r}
+bce <- keras_model_sequential()
+bce %>%
+  layer_dense(name="DeepLayer1",
+              units= ncol(train_x),
+              activation="relu",
+              input_shape=ncol(train_x) ) %>%
+  layer_dense(name="DeepLayer2",
+              units= 16,
+              activation="relu") %>%
+  layer_dense(name="DeepLayer2.5",
+              units= 16,
+              activation="relu") %>%
+  layer_dense(name="DeepLayer3",
+              units= 16,
+              activation="sigmoid") %>%
+  layer_dense(name="OutputLayer",
+              units= 2,
+              activation="sigmoid")
+
+bce %>% compile(loss="bce", optimizer="adamax", metrics=c("accuracy"))
+
+summary(bce)
+```
+
+Ejecucion del modelo con BCE
+
+```{r}
+history <- bce %>% fit(
+  train_x,
+  train_y,
+  epochs= 75,
+  batch_size= 32,
+  validation_split=0.111111 
+)
+```
+
+Evaluacion del modelo
+
+```{r}
+bce %>% evaluate (as.matrix(test_x), test_y)
+```
+
+```{r}
+pred <- bce %>% predict(test_x)
+confusionMatrix(as.factor(round(pred[,1])), as.factor(test_y[,1]))
+```
+
